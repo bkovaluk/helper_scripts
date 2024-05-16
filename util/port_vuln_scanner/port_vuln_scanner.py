@@ -19,10 +19,10 @@ import sys
 import logging
 from prettytable import PrettyTable
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-# Dictionary mapping common ports to their respective vulnerabilities (Top 15)
 vulnerabilities = {
     80: "HTTP (Hypertext Transfer Protocol) - Used for unencrypted web traffic",
     443: "HTTPS (HTTP Secure) - Used for encrypted web traffic",
@@ -50,7 +50,9 @@ def display_table(open_ports):
     """
     table = PrettyTable(["Open Port", "Vulnerability"])
     for port in open_ports:
-        vulnerability = vulnerabilities.get(port, "No known vulnerabilities associated with common services")
+        vulnerability = vulnerabilities.get(
+            port, "No known vulnerabilities associated with common services"
+        )
         table.add_row([port, vulnerability])
     print(table)
 
@@ -63,7 +65,23 @@ def scan_top_ports(target):
     :return: List of open port numbers.
     """
     open_ports = []
-    top_ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 3389, 5900, 8000, 8080, 8443]  # Top 15 ports
+    top_ports = [
+        21,
+        22,
+        23,
+        25,
+        53,
+        80,
+        110,
+        143,
+        443,
+        3306,
+        3389,
+        5900,
+        8000,
+        8080,
+        8443,
+    ]
     for port in top_ports:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
