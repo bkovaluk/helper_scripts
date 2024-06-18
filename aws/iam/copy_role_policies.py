@@ -54,11 +54,23 @@ def get_policy_document(iam_client, role_name, policy_name):
 
 def create_role(iam_client, role_name, trust_policy):
     """Create a new IAM role with the specified trust policy."""
-    role = iam_client.create_role(
-        RoleName=role_name,
-        AssumeRolePolicyDocument=json.dumps(trust_policy)
-    )
-    logger.info(f"Created IAM role: {role_name}")
+    try:
+        role = iam_client.create_role(
+            RoleName=role_name,
+            AssumeRolePolicyDocument=json.dumps(trust_policy)
+        )
+        logger.info(f"Created IAM role: {role_name}")
+    except iam_client.exceptions.MalformedPolicyDocumentException as e:
+        logger.error(f"Malformed trust policy for role {role_name}. Skipping trust policy creation.")
+        logger.error(e)
+        role = iam_client.create_role(
+            RoleName=role_name,
+            AssumeRolePolicyDocument=json.dumps({
+                "Version": "2012-10-17",
+                "Statement": []
+            })
+        )
+        logger.info(f"Created IAM role {role_name} without trust policy due to an error.")
     return role
 
 def attach_policy_to_role(iam_client, role_name, policy_arn):
