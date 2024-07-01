@@ -1,0 +1,39 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::my-bucket/*"
+        },
+        {
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:PutObject",
+            "Resource": "arn:aws:s3:::my-bucket/*",
+            "Condition": {
+                "StringNotEquals": {
+                    "aws:username": [
+                        "allowed-user1",
+                        "allowed-user2"
+                    ]
+                }
+            }
+        },
+        {
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:DeleteObject",
+            "Resource": "arn:aws:s3:::my-bucket/*",
+            "Condition": {
+                "StringNotEquals": {
+                    "aws:username": [
+                        "allowed-user1",
+                        "allowed-user2"
+                    ]
+                }
+            }
+        }
+    ]
+}
