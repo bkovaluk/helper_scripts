@@ -25,7 +25,7 @@ Requirements:
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.3"
+__version__ = "1.4"
 __date__ = "2024-07-11"
 
 import boto3
@@ -93,25 +93,26 @@ def get_iam_roles(iam_client, role_regex=None):
 
     return roles
 
-def get_attached_policies(iam_client, role_name):
+def list_roles_with_policy(iam_client, policy_arn):
     """
-    Get a list of managed policies attached to the specified IAM role.
+    List IAM roles that have the specified managed policy attached.
 
     Args:
         iam_client (boto3.client): The IAM client.
-        role_name (str): The name of the IAM role.
+        policy_arn (str): The ARN of the managed policy.
 
     Returns:
-        list: A list of attached managed policy ARNs.
+        set: A set of IAM role names that have the managed policy attached.
     """
-    paginator = iam_client.get_paginator('list_attached_role_policies')
-    policies = []
+    roles_with_policy = set()
 
-    for page in paginator.paginate(RoleName=role_name):
-        for policy in page['AttachedPolicies']:
-            policies.append(policy['PolicyArn'])
+    paginator = iam_client.get_paginator('list_entities_for_policy')
 
-    return policies
+    for page in paginator.paginate(PolicyArn=policy_arn):
+        for role in page.get('PolicyRoles', []):
+            roles_with_policy.add(role['RoleName'])
+
+    return roles_with_policy
 
 def main(managed_policy_name, role_regex=None, profile='default', region='us-east-1'):
     """
@@ -131,12 +132,8 @@ def main(managed_policy_name, role_regex=None, profile='default', region='us-eas
         roles = get_iam_roles(iam_client, role_regex)
         logger.info(f"Found {len(roles)} roles matching regex '{role_regex}'.")
 
-        roles_without_policy = []
-
-        for role in roles:
-            attached_policies = get_attached_policies(iam_client, role)
-            if policy_arn not in attached_policies:
-                roles_without_policy.append(role)
+        roles_with_policy = list_roles_with_policy(iam_client, policy_arn)
+        roles_without_policy = [role for role in roles if role not in roles_with_policy]
 
         logger.info(f"Found {len(roles_without_policy)} roles without the managed policy '{managed_policy_name}':")
         for role in roles_without_policy:
