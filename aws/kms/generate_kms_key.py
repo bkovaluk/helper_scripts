@@ -3,12 +3,13 @@
 
 """
 Script: generate_kms_key.py
-Description: This script generates a KMS key with a specified key policy using Jinja2 for template rendering.
+Description: This script generates a KMS key with a specified key policy using Jinja2 for template rendering and assigns a specified alias.
 
 Usage:
-    python generate_kms_key.py <template_file> --parameters PARAMETERS [--enable-key-rotation] [--profile PROFILE] [--region REGION]
+    python generate_kms_key.py <kms_key_alias> <template_file> --parameters PARAMETERS [--enable-key-rotation] [--profile PROFILE] [--region REGION]
 
 Arguments:
+    kms_key_alias      The alias name for the KMS key.
     template_file      The path to the Jinja2 template file for the key policy.
 
 Options:
@@ -137,6 +138,25 @@ def enable_key_rotation(kms_client, key_id):
         logger.error(f"Error enabling key rotation for KMS key with ID {key_id}: {e}")
         raise
 
+def create_key_alias(kms_client, key_id, alias_name):
+    """
+    Create an alias for the specified KMS key.
+
+    Args:
+        kms_client (boto3.client): The KMS client.
+        key_id (str): The ID of the KMS key.
+        alias_name (str): The alias name for the KMS key.
+    """
+    try:
+        kms_client.create_alias(
+            AliasName=f'alias/{alias_name}',
+            TargetKeyId=key_id
+        )
+        logger.info(f"Created alias 'alias/{alias_name}' for KMS key with ID: {key_id}")
+    except ClientError as e:
+        logger.error(f"Error creating alias 'alias/{alias_name}' for KMS key with ID {key_id}: {e}")
+        raise
+
 def parse_parameters(parameters):
     """
     Parse the parameters argument into a dictionary.
@@ -157,11 +177,12 @@ def parse_parameters(parameters):
             params[key.strip()] = value.strip()
         return params
 
-def main(template_file, parameters, enable_key_rotation_flag, profile='default', region='us-east-1'):
+def main(kms_key_alias, template_file, parameters, enable_key_rotation_flag, profile='default', region='us-east-1'):
     """
-    Main function to generate a KMS key with a specified key policy.
+    Main function to generate a KMS key with a specified key policy and alias.
 
     Args:
+        kms_key_alias (str): The alias name for the KMS key.
         template_file (str): The path to the Jinja2 template file for the key policy.
         parameters (str): A JSON string or a comma-delimited list of parameters to pass to the key policy template.
         enable_key_rotation_flag (bool): Whether to enable key rotation for the created KMS key.
@@ -182,6 +203,7 @@ def main(template_file, parameters, enable_key_rotation_flag, profile='default',
         if result:
             logger.info("KMS key creation succeeded. Key details:")
             logger.info(result)
+            create_key_alias(kms_client, result['KeyMetadata']['KeyId'], kms_key_alias)
             if enable_key_rotation_flag:
                 enable_key_rotation(kms_client, result['KeyMetadata']['KeyId'])
         else:
@@ -190,7 +212,8 @@ def main(template_file, parameters, enable_key_rotation_flag, profile='default',
         logger.error(f"Error: {str(e)}")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Generate a KMS key with a specified key policy using Jinja2 template.")
+    parser = argparse.ArgumentParser(description="Generate a KMS key with a specified key policy using Jinja2 template and assign an alias.")
+    parser.add_argument('kms_key_alias', help="The alias name for the KMS key.")
     parser.add_argument('template_file', help="The path to the Jinja2 template file for the key policy.")
     parser.add_argument('--parameters', help="A JSON string or a comma-delimited list of parameters to pass to the key policy template.")
     parser.add_argument('--enable-key-rotation', action='store_true', help="Enable key rotation for the created KMS key.")
@@ -198,4 +221,4 @@ if __name__ == '__main__':
     parser.add_argument('--region', default='us-east-1', help="The AWS region name (default: us-east-1).")
     args = parser.parse_args()
 
-    main(args.template_file, args.parameters, args.enable_key_rotation, args.profile, args.region)
+    main(args.kms_key_alias, args.template_file, args.parameters, args.enable_key_rotation, args.profile, args.region)
