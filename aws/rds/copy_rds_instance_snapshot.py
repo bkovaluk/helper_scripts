@@ -35,7 +35,7 @@ Requirements:
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
+__version__ = "1.1"
 __date__ = "2024-08-07"
 
 import boto3
@@ -82,7 +82,13 @@ def copy_snapshot(rds_client, source_snapshot_name, target_snapshot_name, kms_ke
 
         response = rds_client.copy_db_snapshot(**copy_params)
         snapshot_arn = response['DBSnapshot']['DBSnapshotArn']
-        logger.info(f"Copied snapshot: {snapshot_arn}")
+        logger.info(f"Started copying snapshot: {snapshot_arn}")
+
+        # Wait for the snapshot to be available
+        waiter = rds_client.get_waiter('db_snapshot_available')
+        waiter.wait(DBSnapshotIdentifier=target_snapshot_name)
+        logger.info(f"Copied snapshot is now available: {snapshot_arn}")
+
         return snapshot_arn
     except Exception as e:
         logger.error(f"Error copying snapshot: {str(e)}")
