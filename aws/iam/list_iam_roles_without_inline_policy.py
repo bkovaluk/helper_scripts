@@ -25,7 +25,7 @@ Requirements:
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
+__version__ = "1.5"
 __date__ = "2024-07-11"
 
 import boto3
@@ -74,27 +74,23 @@ def get_iam_roles(iam_client, role_regex=None):
 
     return roles
 
-def list_roles_with_inline_policy(iam_client, inline_policy_name):
+def role_has_inline_policy(iam_client, role_name, inline_policy_name):
     """
-    List IAM roles that have the specified inline policy attached.
+    Check if the specified IAM role has the given inline policy attached.
 
     Args:
         iam_client (boto3.client): The IAM client.
+        role_name (str): The name of the IAM role.
         inline_policy_name (str): The name of the inline policy.
 
     Returns:
-        set: A set of IAM role names that have the inline policy attached.
+        bool: True if the role has the inline policy attached, False otherwise.
     """
-    roles_with_policy = set()
-
     paginator = iam_client.get_paginator('list_role_policies')
-
-    for page in paginator.paginate():
-        for role in page['Roles']:
-            if inline_policy_name in page['PolicyNames']:
-                roles_with_policy.add(role['RoleName'])
-
-    return roles_with_policy
+    for page in paginator.paginate(RoleName=role_name):
+        if inline_policy_name in page['PolicyNames']:
+            return True
+    return False
 
 def main(inline_policy_name, role_regex=None, profile='default', region='us-east-1'):
     """
@@ -112,8 +108,7 @@ def main(inline_policy_name, role_regex=None, profile='default', region='us-east
         roles = get_iam_roles(iam_client, role_regex)
         logger.info(f"Found {len(roles)} roles matching regex '{role_regex}'.")
 
-        roles_with_policy = list_roles_with_inline_policy(iam_client, inline_policy_name)
-        roles_without_policy = [role for role in roles if role not in roles_with_policy]
+        roles_without_policy = [role for role in roles if not role_has_inline_policy(iam_client, role, inline_policy_name)]
 
         logger.info(f"Found {len(roles_without_policy)} roles without the inline policy '{inline_policy_name}':")
         for role in roles_without_policy:
