@@ -18,31 +18,43 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
+__version__ = "1.1"
 __date__ = "2024-07-02"
 
 import boto3
-import argparse
 import logging
 import json
+import typer
+from typing import Optional
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def add_s3_lifecycle_policy(bucket_name, lifecycle_policy_path, profile_name, region_name='us-east-1'):
+app = typer.Typer(help="Add a lifecycle policy to an S3 bucket using the S3 API.")
+
+def add_s3_lifecycle_policy(
+    bucket_name: str,
+    lifecycle_policy_path: str,
+    profile_name: str = "default",
+    region_name: str = "us-east-1"
+):
     """Add a lifecycle policy to an S3 bucket."""
     session = boto3.Session(profile_name=profile_name, region_name=region_name)
     s3_client = session.client('s3')
 
     # Read lifecycle policy from the specified file
-    with open(lifecycle_policy_path, 'r') as policy_file:
-        lifecycle_policy = json.load(policy_file)
+    try:
+        with open(lifecycle_policy_path, 'r') as policy_file:
+            lifecycle_policy = json.load(policy_file)
+    except Exception as e:
+        logger.error(f"Error reading lifecycle policy file '{lifecycle_policy_path}': {str(e)}")
+        raise typer.Exit(code=1)
 
     try:
         # Put lifecycle policy on the bucket
@@ -52,20 +64,23 @@ def add_s3_lifecycle_policy(bucket_name, lifecycle_policy_path, profile_name, re
         )
         logger.info(f"Applied lifecycle policy from {lifecycle_policy_path} to bucket: {bucket_name}")
     except Exception as e:
-        logger.error(f"Error applying lifecycle policy to bucket {bucket_name}: {str(e)}")
+        logger.error(f"Error applying lifecycle policy to bucket '{bucket_name}': {str(e)}")
+        raise typer.Exit(code=1)
+
+@app.command()
+def main(
+    bucket_name: str = typer.Argument(..., help="The name of the S3 bucket"),
+    lifecycle_policy_path: str = typer.Argument(..., help="The path to the lifecycle policy JSON file"),
+    profile: str = typer.Option("default", "--profile", help="The name of the AWS profile to use (default: default)"),
+    region: str = typer.Option("us-east-1", "--region", help="The AWS region name (default: us-east-1)")
+):
+    """Add a lifecycle policy to an S3 bucket."""
+    add_s3_lifecycle_policy(
+        bucket_name=bucket_name,
+        lifecycle_policy_path=lifecycle_policy_path,
+        profile_name=profile,
+        region_name=region
+    )
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Add a lifecycle policy to an S3 bucket")
-    parser.add_argument("bucket_name", help="The name of the S3 bucket")
-    parser.add_argument("lifecycle_policy_path", help="The path to the lifecycle policy JSON file")
-    parser.add_argument("--profile", default="default", help="The name of the AWS profile to use (default: default)")
-    parser.add_argument("--region", default="us-east-1", help="The AWS region name (default: us-east-1)")
-
-    args = parser.parse_args()
-
-    add_s3_lifecycle_policy(
-        bucket_name=args.bucket_name,
-        lifecycle_policy_path=args.lifecycle_policy_path,
-        profile_name=args.profile,
-        region_name=args.region
-    )
+    app()

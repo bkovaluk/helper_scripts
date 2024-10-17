@@ -19,66 +19,48 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
     - jinja2
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
+__version__ = "1.1"
 __date__ = "2024-07-23"
 
 import boto3
-import argparse
 import logging
 import json
+import time
 from jinja2 import Environment, FileSystemLoader
 from botocore.exceptions import ClientError
+import typer
+from typing import Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def get_athena_client(profile, region):
+app = typer.Typer(help="Execute an Athena query using a Jinja2 template.")
+
+def get_athena_client(profile: str, region: str):
     """
     Get the Athena client using the specified profile and region.
-
-    Args:
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
-
-    Returns:
-        boto3.client: The Athena client.
     """
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('athena')
 
-def render_query(template_file, parameters):
+def render_query(template_file: str, parameters: dict):
     """
     Render the query using the Jinja2 template and provided parameters.
-
-    Args:
-        template_file (str): The path to the Jinja2 template file.
-        parameters (dict): A dictionary of parameters to pass to the template.
-
-    Returns:
-        str: The rendered query.
     """
     env = Environment(loader=FileSystemLoader('.'))
     template = env.get_template(template_file)
     return template.render(parameters)
 
-def execute_query(athena_client, query, output_location):
+def execute_query(athena_client, query: str, output_location: str):
     """
     Execute the Athena query and wait for the results.
-
-    Args:
-        athena_client (boto3.client): The Athena client.
-        query (str): The SQL query to execute.
-        output_location (str): The S3 location for query results.
-
-    Returns:
-        dict: The query execution result.
     """
     try:
         response = athena_client.start_query_execution(
@@ -90,7 +72,8 @@ def execute_query(athena_client, query, output_location):
 
         # Wait for the query to complete
         while True:
-            query_status = athena_client.get_query_execution(QueryExecutionId=query_execution_id)['QueryExecution']['Status']['State']
+            query_execution = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+            query_status = query_execution['QueryExecution']['Status']['State']
             if query_status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
                 break
             logger.info("Waiting for query to complete...")
@@ -108,16 +91,28 @@ def execute_query(athena_client, query, output_location):
         logger.error(f"Error executing query: {e}")
         raise
 
-def main(template_file, output_location, parameters=None, profile='default', region='us-east-1'):
+@app.command()
+def main(
+    template_file: str = typer.Argument(..., help="The path to the Jinja2 template file for the query."),
+    output_location: str = typer.Argument(..., help="The S3 location for query results (e.g., s3://my-bucket/query-results/)."),
+    parameters: Optional[str] = typer.Option(
+        None,
+        "--parameters",
+        help="A JSON string of parameters to pass to the query template.",
+    ),
+    profile: str = typer.Option(
+        "default",
+        "--profile",
+        help="The name of the AWS profile to use (default: default).",
+    ),
+    region: str = typer.Option(
+        "us-east-1",
+        "--region",
+        help="The AWS region name (default: us-east-1).",
+    ),
+):
     """
-    Main function to execute an Athena query using a Jinja2 template.
-
-    Args:
-        template_file (str): The path to the Jinja2 template file.
-        output_location (str): The S3 location for query results.
-        parameters (str, optional): A JSON string of parameters to pass to the query template.
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
+    Execute an Athena query using a Jinja2 template.
     """
     try:
         athena_client = get_athena_client(profile, region)
@@ -128,19 +123,12 @@ def main(template_file, output_location, parameters=None, profile='default', reg
         if result:
             logger.info("Query execution succeeded. Results:")
             for row in result['ResultSet']['Rows']:
-                logger.info(row)
+                logger.info(row['Data'])
         else:
             logger.error("Query execution failed.")
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        raise typer.Exit(code=1)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Execute an Athena query using a Jinja2 template.")
-    parser.add_argument('template_file', help="The path to the Jinja2 template file for the query.")
-    parser.add_argument('output_location', help="The S3 location for query results (e.g., s3://my-bucket/query-results/).")
-    parser.add_argument('--parameters', help="A JSON string of parameters to pass to the query template.")
-    parser.add_argument('--profile', default='default', help="The name of the AWS profile to use (default: default).")
-    parser.add_argument('--region', default='us-east-1', help="The AWS region name (default: us-east-1).")
-    args = parser.parse_args()
-
-    main(args.template_file, args.output_location, args.parameters, args.profile, args.region)
+    app()

@@ -22,49 +22,55 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
     - logging
     - tabulate
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.3"
+__version__ = "1.4"
 __date__ = "2024-05-21"
 
 import boto3
-import argparse
 import logging
 from botocore.exceptions import ClientError, BotoCoreError
 from tabulate import tabulate
+import typer
+from typing import Optional
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-def get_acm_client(profile, region):
+app = typer.Typer(
+    help="List ACM certificates that contain a specified FQDN and are in a specified status."
+)
+
+VALID_STATUSES = [
+    'PENDING_VALIDATION',
+    'ISSUED',
+    'INACTIVE',
+    'EXPIRED',
+    'VALIDATION_TIMED_OUT',
+    'REVOKED',
+    'FAILED',
+    'ALL',
+]
+
+
+def get_acm_client(profile: str, region: str):
     """
     Get the ACM client using the specified profile and region.
-
-    Args:
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
-
-    Returns:
-        boto3.client: The ACM client.
     """
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('acm')
 
-def list_certificates(acm_client, status):
+
+def list_certificates(acm_client, status: str):
     """
     List ACM certificates with the specified status.
-
-    Args:
-        acm_client (boto3.client): The ACM client.
-        status (str): The status of the certificates to list.
-
-    Returns:
-        list: A list of certificate summaries.
     """
     paginator = acm_client.get_paginator('list_certificates')
     certificates = []
@@ -78,69 +84,87 @@ def list_certificates(acm_client, status):
 
     return certificates
 
-def get_certificate_details(acm_client, certificate_arn):
+
+def get_certificate_details(acm_client, certificate_arn: str):
     """
     Get the details of a specific ACM certificate.
-
-    Args:
-        acm_client (boto3.client): The ACM client.
-        certificate_arn (str): The ARN of the certificate to get details for.
-
-    Returns:
-        dict: The details of the ACM certificate.
     """
     try:
         response = acm_client.describe_certificate(CertificateArn=certificate_arn)
         return response['Certificate']
-    except ClientError as e:
-        logger.error(f"Failed to describe certificate {certificate_arn}: {e}")
-        return None
-    except BotoCoreError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.error(f"Failed to describe certificate {certificate_arn}: {e}")
         return None
 
-def find_certificates_with_fqdn(certificates, acm_client, fqdn):
+
+def find_certificates_with_fqdn(certificates: list, acm_client, fqdn: str):
     """
     Find certificates that contain the specified FQDN.
-
-    Args:
-        certificates (list): A list of certificate summaries.
-        acm_client (boto3.client): The ACM client.
-        fqdn (str): The FQDN to search for in certificates.
-
-    Returns:
-        list: A list of certificates containing the specified FQDN.
     """
     matching_certificates = []
 
     for cert_summary in certificates:
         cert_details = get_certificate_details(acm_client, cert_summary['CertificateArn'])
-        if cert_details and (fqdn in cert_details['DomainName'] or fqdn in cert_details.get('SubjectAlternativeNames', [])):
-            matching_certificates.append(cert_details)
+        if cert_details:
+            domain_name = cert_details.get('DomainName', '')
+            alt_names = cert_details.get('SubjectAlternativeNames', [])
+            if fqdn in domain_name or fqdn in alt_names:
+                matching_certificates.append(cert_details)
 
     return matching_certificates
 
-def main(fqdn=None, status='ISSUED', profile='default', region='us-east-1', log_level='INFO'):
-    """
-    Main function to list ACM certificates that contain the specified FQDN and are in the specified status.
 
-    Args:
-        fqdn (str): The FQDN to search for in certificates.
-        status (str): The status of the certificates to list.
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
-        log_level (str): The logging level to use.
+@app.command()
+def main(
+    fqdn: Optional[str] = typer.Argument(
+        None, help="The fully qualified domain name (FQDN) to search for in certificates."
+    ),
+    status: str = typer.Option(
+        'ISSUED',
+        "--status",
+        help="The status of the certificates to list (default: ISSUED).",
+        case_sensitive=False,
+        show_choices=True,
+    ),
+    profile: str = typer.Option(
+        'default',
+        "--profile",
+        help="The name of the AWS profile to use (default: default).",
+    ),
+    region: str = typer.Option(
+        'us-east-1',
+        "--region",
+        help="The AWS region name (default: us-east-1).",
+    ),
+    log_level: str = typer.Option(
+        'INFO',
+        "--log-level",
+        help="The logging level (default: INFO).",
+        case_sensitive=False,
+        show_choices=True,
+    ),
+):
+    """
+    List ACM certificates that contain a specified FQDN and are in a specified status.
     """
     logging.getLogger().setLevel(log_level.upper())
 
+    if status.upper() not in VALID_STATUSES:
+        typer.echo(f"Invalid status '{status}'. Valid statuses are: {', '.join(VALID_STATUSES)}")
+        raise typer.Exit(code=1)
+
     try:
         acm_client = get_acm_client(profile, region)
-        certificates = list_certificates(acm_client, status)
+        certificates = list_certificates(acm_client, status.upper())
 
         if fqdn:
             matching_certificates = find_certificates_with_fqdn(certificates, acm_client, fqdn)
         else:
-            matching_certificates = [get_certificate_details(acm_client, cert['CertificateArn']) for cert in certificates]
+            matching_certificates = [
+                get_certificate_details(acm_client, cert['CertificateArn']) for cert in certificates
+            ]
+
+        matching_certificates = [cert for cert in matching_certificates if cert]
 
         if not matching_certificates:
             logger.info("No matching certificates found.")
@@ -148,28 +172,21 @@ def main(fqdn=None, status='ISSUED', profile='default', region='us-east-1', log_
 
         table = []
         for cert in matching_certificates:
-            if cert:
-                table.append([
-                    cert['CertificateArn'],
-                    cert['DomainName'],
-                    ", ".join(cert.get('SubjectAlternativeNames', [])),
-                    cert.get('NotBefore', 'N/A'),
-                    cert.get('NotAfter', 'N/A')
-                ])
+            table.append([
+                cert['CertificateArn'],
+                cert['DomainName'],
+                ", ".join(cert.get('SubjectAlternativeNames', [])),
+                cert.get('NotBefore', 'N/A'),
+                cert.get('NotAfter', 'N/A')
+            ])
 
         headers = ["Certificate ARN", "Domain Name", "Subject Alternative Names", "Valid From", "Valid To"]
-        print(tabulate(table, headers=headers))
+        typer.echo(tabulate(table, headers=headers))
 
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        raise typer.Exit(code=1)
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="List ACM certificates that contain a specified FQDN and are in a specified status.")
-    parser.add_argument('fqdn', nargs='?', help="The fully qualified domain name (FQDN) to search for in certificates.")
-    parser.add_argument('--status', default='ISSUED', choices=['PENDING_VALIDATION', 'ISSUED', 'INACTIVE', 'EXPIRED', 'VALIDATION_TIMED_OUT', 'REVOKED', 'FAILED', 'ALL'], help="The status of the certificates to list (default: ISSUED).")
-    parser.add_argument('--profile', default='default', help="The name of the AWS profile to use (default: default).")
-    parser.add_argument('--region', default='us-east-1', help="The AWS region name (default: us-east-1).")
-    parser.add_argument('--log-level', default='INFO', help="The logging level to use (default: INFO).")
-    args = parser.parse_args()
-
-    main(args.fqdn, args.status, args.profile, args.region, args.log_level)
+    app()

@@ -4,7 +4,7 @@
 """
 Script: list_iam_roles_without_inline_policy.py
 Description: This script returns a list of IAM roles that do not have a specified inline policy attached.
-             The script takes an inline policy name and an optional regex pattern for IAM role names as arguments.
+             It also shows for each role the counts of inline and managed policies, and how close they are to AWS IAM limits.
 
 Usage:
     python list_iam_roles_without_inline_policy.py <inline_policy_name> [<role_regex>] [--profile PROFILE] [--region REGION]
@@ -19,48 +19,45 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
+    - tabulate
     - re
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.5"
+__version__ = "1.6"
 __date__ = "2024-07-11"
 
 import boto3
-import argparse
 import logging
 import re
+import sys
+import typer
+from typing import Optional, List, Tuple
+from tabulate import tabulate
+from botocore.exceptions import ClientError
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-def get_iam_client(profile, region):
+app = typer.Typer(help="List IAM roles without a specified inline policy attached.")
+
+# AWS IAM Limits
+INLINE_POLICY_SIZE_LIMIT = 10240  # 10,240 characters
+MANAGED_POLICY_LIMIT = 10  # Maximum number of managed policies per role
+
+def get_iam_client(profile: str, region: str):
     """
     Get the IAM client using the specified profile and region.
-
-    Args:
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
-
-    Returns:
-        boto3.client: The IAM client.
     """
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('iam')
 
-def get_iam_roles(iam_client, role_regex=None):
+def get_iam_roles(iam_client, role_regex: Optional[str] = None) -> List[str]:
     """
     Get a list of IAM roles matching the specified regex pattern.
-
-    Args:
-        iam_client (boto3.client): The IAM client.
-        role_regex (str): The regex pattern to match IAM roles. If None, all roles are returned.
-
-    Returns:
-        list: A list of IAM role names.
     """
     paginator = iam_client.get_paginator('list_roles')
     roles = []
@@ -74,17 +71,9 @@ def get_iam_roles(iam_client, role_regex=None):
 
     return roles
 
-def role_has_inline_policy(iam_client, role_name, inline_policy_name):
+def role_has_inline_policy(iam_client, role_name: str, inline_policy_name: str) -> bool:
     """
     Check if the specified IAM role has the given inline policy attached.
-
-    Args:
-        iam_client (boto3.client): The IAM client.
-        role_name (str): The name of the IAM role.
-        inline_policy_name (str): The name of the inline policy.
-
-    Returns:
-        bool: True if the role has the inline policy attached, False otherwise.
     """
     paginator = iam_client.get_paginator('list_role_policies')
     for page in paginator.paginate(RoleName=role_name):
@@ -92,37 +81,73 @@ def role_has_inline_policy(iam_client, role_name, inline_policy_name):
             return True
     return False
 
-def main(inline_policy_name, role_regex=None, profile='default', region='us-east-1'):
+def get_inline_policy_count(iam_client, role_name: str) -> int:
     """
-    Main function to list IAM roles without the specified inline policy attached.
+    Get the count of inline policies attached to a role.
+    """
+    count = 0
+    paginator = iam_client.get_paginator('list_role_policies')
+    for page in paginator.paginate(RoleName=role_name):
+        count += len(page['PolicyNames'])
+    return count
 
-    Args:
-        inline_policy_name (str): The name of the inline policy to check for.
-        role_regex (str): The regex pattern to match IAM roles. If None, all roles are checked.
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
+def get_managed_policy_count(iam_client, role_name: str) -> int:
+    """
+    Get the count of managed policies attached to a role.
+    """
+    count = 0
+    paginator = iam_client.get_paginator('list_attached_role_policies')
+    for page in paginator.paginate(RoleName=role_name):
+        count += len(page['AttachedPolicies'])
+    return count
+
+@app.command()
+def main(
+    inline_policy_name: str = typer.Argument(..., help="The name of the inline policy to check for."),
+    role_regex: Optional[str] = typer.Argument(None, help="The regex pattern to match IAM roles. If not provided, all roles will be checked."),
+    profile: str = typer.Option('default', help="The name of the AWS profile to use (default: default)."),
+    region: str = typer.Option('us-east-1', help="The AWS region name (default: us-east-1)."),
+):
+    """
+    List IAM roles without a specified inline policy attached.
     """
     try:
         iam_client = get_iam_client(profile, region)
 
         roles = get_iam_roles(iam_client, role_regex)
-        logger.info(f"Found {len(roles)} roles matching regex '{role_regex}'.")
+        logger.info(f"Found {len(roles)} roles matching regex '{role_regex}'.\n")
 
         roles_without_policy = [role for role in roles if not role_has_inline_policy(iam_client, role, inline_policy_name)]
+        logger.info(f"Found {len(roles_without_policy)} roles without the inline policy '{inline_policy_name}':\n")
 
-        logger.info(f"Found {len(roles_without_policy)} roles without the inline policy '{inline_policy_name}':")
-        for role in roles_without_policy:
-            logger.info(role)
+        if not roles_without_policy:
+            logger.info("No roles found.")
+            sys.exit(0)
 
+        # Prepare table data
+        table_data = []
+        for role_name in roles_without_policy:
+            inline_policy_count = get_inline_policy_count(iam_client, role_name)
+            managed_policy_count = get_managed_policy_count(iam_client, role_name)
+            inline_usage = f"{inline_policy_count} / limit"
+            managed_policy_usage = f"{managed_policy_count} / {MANAGED_POLICY_LIMIT}"
+
+            table_data.append([
+                role_name,
+                inline_usage,
+                managed_policy_usage,
+            ])
+
+        headers = ["Role Name", "Inline Policy Count", "Managed Policy Count"]
+
+        logger.info(tabulate(table_data, headers=headers, tablefmt="pretty"))
+
+    except ClientError as e:
+        logger.error(f"AWS ClientError: {e}")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        sys.exit(1)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="List IAM roles without a specified inline policy attached.")
-    parser.add_argument('inline_policy_name', help="The name of the inline policy to check for.")
-    parser.add_argument('role_regex', nargs='?', default=None, help="The regex pattern to match IAM roles. If not provided, all roles will be checked.")
-    parser.add_argument('--profile', default='default', help="The name of the AWS profile to use (default: default).")
-    parser.add_argument('--region', default='us-east-1', help="The AWS region name (default: us-east-1).")
-    args = parser.parse_args()
-
-    main(args.inline_policy_name, args.role_regex, args.profile, args.region)
+    app()

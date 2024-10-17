@@ -17,48 +17,43 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
+__version__ = "1.1"
 __date__ = "2024-07-06"
 
 import boto3
-import argparse
 import logging
 import time
+import typer
 from botocore.exceptions import ClientError
+from typing import Optional
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-def get_ecs_client(profile, region):
+app = typer.Typer(
+    help="Deregister all ECS task definitions for a specified task family."
+)
+
+
+def get_ecs_client(profile: str, region: str):
     """
     Get the ECS client using the specified profile and region.
-
-    Args:
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
-
-    Returns:
-        boto3.client: The ECS client.
     """
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('ecs')
 
-def list_task_definitions(ecs_client, task_family):
+
+def list_task_definitions(ecs_client, task_family: str):
     """
     List all task definitions for the specified task family.
-
-    Args:
-        ecs_client (boto3.client): The ECS client.
-        task_family (str): The task family to list task definitions for.
-
-    Returns:
-        list: A list of task definition ARNs.
     """
     paginator = ecs_client.get_paginator('list_task_definitions')
     task_definitions = []
@@ -68,13 +63,10 @@ def list_task_definitions(ecs_client, task_family):
 
     return task_definitions
 
-def deregister_task_definitions(ecs_client, task_definitions):
+
+def deregister_task_definitions(ecs_client, task_definitions: list):
     """
     Deregister the specified task definitions.
-
-    Args:
-        ecs_client (boto3.client): The ECS client.
-        task_definitions (list): A list of task definition ARNs to deregister.
     """
     for task_definition in task_definitions:
         try:
@@ -89,14 +81,25 @@ def deregister_task_definitions(ecs_client, task_definitions):
             else:
                 logger.error(f"Failed to deregister task definition {task_definition}: {e}")
 
-def main(task_family, profile='default', region='us-east-1'):
-    """
-    Main function to deregister all task definitions associated with the specified task family.
 
-    Args:
-        task_family (str): The family of the ECS task definitions to deregister.
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
+@app.command()
+def main(
+    task_family: str = typer.Argument(
+        ..., help="The family of the ECS task definitions to deregister."
+    ),
+    profile: str = typer.Option(
+        "default",
+        "--profile",
+        help="The name of the AWS profile to use (default: default).",
+    ),
+    region: str = typer.Option(
+        "us-east-1",
+        "--region",
+        help="The AWS region name (default: us-east-1).",
+    ),
+):
+    """
+    Deregister all ECS task definitions for a specified task family.
     """
     try:
         ecs_client = get_ecs_client(profile, region)
@@ -106,15 +109,22 @@ def main(task_family, profile='default', region='us-east-1'):
             logger.info("No task definitions found to deregister.")
             return
 
-        logger.info(f"Found {len(task_definitions)} task definitions for family '{task_family}'.")
-        list_choice = input("Would you like to list the task definitions? (y/n): ").strip().lower()
+        logger.info(
+            f"Found {len(task_definitions)} task definitions for family '{task_family}'."
+        )
+        list_choice = typer.confirm(
+            "Would you like to list the task definitions?", default=False
+        )
 
-        if list_choice == 'y':
+        if list_choice:
             for task_definition in task_definitions:
-                print(task_definition)
+                typer.echo(task_definition)
 
-        confirm = input("Press Enter to deregister these task definitions, or 'n' to cancel: ").strip().lower()
-        if confirm == 'n':
+        confirm = typer.confirm(
+            "Are you sure you want to deregister these task definitions?",
+            default=False,
+        )
+        if not confirm:
             logger.info("Operation cancelled by user.")
             return
 
@@ -122,12 +132,8 @@ def main(task_family, profile='default', region='us-east-1'):
 
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        raise typer.Exit(code=1)
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Deregister all ECS task definitions for a specified task family.")
-    parser.add_argument('task_family', help="The family of the ECS task definitions to deregister.")
-    parser.add_argument('--profile', default='default', help="The name of the AWS profile to use (default: default).")
-    parser.add_argument('--region', default='us-east-1', help="The AWS region name (default: us-east-1).")
-    args = parser.parse_args()
-
-    main(args.task_family, args.profile, args.region)
+    app()

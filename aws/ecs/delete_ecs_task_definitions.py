@@ -17,48 +17,43 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.2"
+__version__ = "1.3"
 __date__ = "2024-06-21"
 
 import boto3
-import argparse
 import logging
 import time
+import typer
 from botocore.exceptions import ClientError
+from typing import Optional
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-def get_ecs_client(profile, region):
+app = typer.Typer(
+    help="Delete all ECS task definitions for a specified task family."
+)
+
+
+def get_ecs_client(profile: str, region: str):
     """
     Get the ECS client using the specified profile and region.
-
-    Args:
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
-
-    Returns:
-        boto3.client: The ECS client.
     """
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('ecs')
 
-def list_task_definitions(ecs_client, task_family):
+
+def list_task_definitions(ecs_client, task_family: str):
     """
     List all task definitions for the specified task family.
-
-    Args:
-        ecs_client (boto3.client): The ECS client.
-        task_family (str): The task family to list task definitions for.
-
-    Returns:
-        list: A list of task definition ARNs.
     """
     paginator = ecs_client.get_paginator('list_task_definitions')
     task_definitions = []
@@ -68,17 +63,16 @@ def list_task_definitions(ecs_client, task_family):
 
     return task_definitions
 
-def delete_task_definitions(ecs_client, task_definitions):
+
+def delete_task_definitions(ecs_client, task_definitions: list):
     """
     Delete the specified task definitions.
-
-    Args:
-        ecs_client (boto3.client): The ECS client.
-        task_definitions (list): A list of task definition ARNs to delete.
     """
     for task_definition in task_definitions:
         try:
-            ecs_client.deregister_task_definition(taskDefinition=task_definition)
+            ecs_client.deregister_task_definition(
+                taskDefinition=task_definition
+            )
             logger.info(f"Deregistered task definition: {task_definition}")
             ecs_client.delete_task_definitions(taskDefinition=task_definition)
             logger.info(f"Deleted task definition: {task_definition}")
@@ -86,21 +80,38 @@ def delete_task_definitions(ecs_client, task_definitions):
             if e.response['Error']['Code'] == 'ThrottlingException':
                 logger.warning("Rate limit reached, waiting for 15 seconds...")
                 time.sleep(15)
-                ecs_client.deregister_task_definition(taskDefinition=task_definition)
+                ecs_client.deregister_task_definition(
+                    taskDefinition=task_definition
+                )
                 logger.info(f"Deregistered task definition: {task_definition}")
-                ecs_client.delete_task_definitions(taskDefinition=task_definition)
+                ecs_client.delete_task_definitions(
+                    taskDefinition=task_definition
+                )
                 logger.info(f"Deleted task definition: {task_definition}")
             else:
-                logger.error(f"Failed to delete task definition {task_definition}: {e}")
+                logger.error(
+                    f"Failed to delete task definition {task_definition}: {e}"
+                )
 
-def main(task_family, profile='default', region='us-east-1'):
+
+@app.command()
+def main(
+    task_family: str = typer.Argument(
+        ..., help="The family of the ECS task definitions to delete."
+    ),
+    profile: str = typer.Option(
+        "default",
+        "--profile",
+        help="The name of the AWS profile to use (default: default).",
+    ),
+    region: str = typer.Option(
+        "us-east-1",
+        "--region",
+        help="The AWS region name (default: us-east-1).",
+    ),
+):
     """
-    Main function to delete all task definitions associated with the specified task family.
-
-    Args:
-        task_family (str): The family of the ECS task definitions to delete.
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
+    Delete all ECS task definitions for a specified task family.
     """
     try:
         ecs_client = get_ecs_client(profile, region)
@@ -109,16 +120,23 @@ def main(task_family, profile='default', region='us-east-1'):
         if not task_definitions:
             logger.info("No task definitions found to delete.")
             return
-        
-        logger.info(f"Found {len(task_definitions)} task definitions for family '{task_family}'.")
-        list_choice = input("Would you like to list the task definitions? (y/n): ").strip().lower()
 
-        if list_choice == 'y':
+        logger.info(
+            f"Found {len(task_definitions)} task definitions for family '{task_family}'."
+        )
+        list_choice = typer.confirm(
+            "Would you like to list the task definitions?", default=False
+        )
+
+        if list_choice:
             for task_definition in task_definitions:
-                print(task_definition)
+                typer.echo(task_definition)
 
-        confirm = input("Press Enter to delete these task definitions, or 'n' to cancel: ").strip().lower()
-        if confirm == 'n':
+        confirm = typer.confirm(
+            "Are you sure you want to delete these task definitions?",
+            default=False,
+        )
+        if not confirm:
             logger.info("Operation cancelled by user.")
             return
 
@@ -126,12 +144,8 @@ def main(task_family, profile='default', region='us-east-1'):
 
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        raise typer.Exit(code=1)
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Delete all ECS task definitions for a specified task family.")
-    parser.add_argument('task_family', help="The family of the ECS task definitions to delete.")
-    parser.add_argument('--profile', default='default', help="The name of the AWS profile to use (default: default).")
-    parser.add_argument('--region', default='us-east-1', help="The AWS region name (default: us-east-1).")
-    args = parser.parse_args()
-
-    main(args.task_family, args.profile, args.region)
+    app()

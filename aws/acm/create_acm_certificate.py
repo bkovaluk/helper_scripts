@@ -20,48 +20,46 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
+__version__ = "1.1"
 __date__ = "2024-07-13"
 
 import boto3
-import argparse
 import logging
+import typer
+from typing import Optional
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-def get_acm_client(profile, region):
+app = typer.Typer(
+    help="Create an ACM certificate with a primary FQDN and optional additional names."
+)
+
+
+def get_acm_client(profile: str, region: str):
     """
     Get the ACM client using the specified profile and region.
-
-    Args:
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
-
-    Returns:
-        boto3.client: The ACM client.
     """
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('acm')
 
-def create_certificate(acm_client, primary_fqdn, additional_names, validation_method):
+
+def create_certificate(
+    acm_client,
+    primary_fqdn: str,
+    additional_names: list,
+    validation_method: str
+):
     """
     Create an ACM certificate with the specified FQDNs and validation method.
-
-    Args:
-        acm_client (boto3.client): The ACM client.
-        primary_fqdn (str): The primary fully qualified domain name (FQDN).
-        additional_names (list): A list of additional FQDNs.
-        validation_method (str): The validation method (email or dns).
-
-    Returns:
-        dict: The response from the ACM request_certificate API call.
     """
     response = acm_client.request_certificate(
         DomainName=primary_fqdn,
@@ -70,33 +68,59 @@ def create_certificate(acm_client, primary_fqdn, additional_names, validation_me
     )
     return response
 
-def main(primary_fqdn, additional_names, validation_method, profile='default', region='us-east-1'):
-    """
-    Main function to create an ACM certificate with the specified FQDNs and validation method.
 
-    Args:
-        primary_fqdn (str): The primary fully qualified domain name (FQDN).
-        additional_names (str): A comma-delimited list of additional FQDNs.
-        validation_method (str): The validation method (email or dns).
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
+@app.command()
+def main(
+    primary_fqdn: str = typer.Argument(
+        ..., help="The primary fully qualified domain name (FQDN) for the certificate."
+    ),
+    additional_names: Optional[str] = typer.Option(
+        None,
+        "--additional-names",
+        help="Comma-delimited list of additional FQDNs.",
+    ),
+    validation_method: str = typer.Option(
+        'email',
+        "--validation-method",
+        help="The validation method to use (dns or email, default: email).",
+        case_sensitive=False,
+        show_choices=True,
+    ),
+    profile: str = typer.Option(
+        'default',
+        "--profile",
+        help="The name of the AWS profile to use (default: default).",
+    ),
+    region: str = typer.Option(
+        'us-east-1',
+        "--region",
+        help="The AWS region name (default: us-east-1).",
+    ),
+):
+    """
+    Create an ACM certificate with a primary FQDN and optional additional names.
     """
     try:
         acm_client = get_acm_client(profile, region)
-        additional_names_list = additional_names.split(',') if additional_names else []
-        response = create_certificate(acm_client, primary_fqdn, additional_names_list, validation_method)
-        logger.info(f"Certificate request initiated. Certificate ARN: {response['CertificateArn']}")
-
+        additional_names_list = (
+            [name.strip() for name in additional_names.split(',')]
+            if additional_names
+            else []
+        )
+        validation_method = validation_method.lower()
+        if validation_method not in ['email', 'dns']:
+            typer.echo("Validation method must be 'email' or 'dns'.")
+            raise typer.Exit(code=1)
+        response = create_certificate(
+            acm_client, primary_fqdn, additional_names_list, validation_method.upper()
+        )
+        logger.info(
+            f"Certificate request initiated. Certificate ARN: {response['CertificateArn']}"
+        )
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        raise typer.Exit(code=1)
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Create an ACM certificate with a primary FQDN and optional additional names.")
-    parser.add_argument('primary_fqdn', help="The primary fully qualified domain name (FQDN) for the certificate.")
-    parser.add_argument('--additional-names', help="Comma-delimited list of additional FQDNs.")
-    parser.add_argument('--validation-method', default='email', choices=['email', 'dns'], help="The validation method to use (dns or email, default: email).")
-    parser.add_argument('--profile', default='default', help="The name of the AWS profile to use (default: default).")
-    parser.add_argument('--region', default='us-east-1', help="The AWS region name (default: us-east-1).")
-    args = parser.parse_args()
-
-    main(args.primary_fqdn, args.additional_names, args.validation_method, args.profile, args.region)
+    app()

@@ -21,19 +21,20 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
+__version__ = "1.1"
 __date__ = "2024-03-03"
 
 import boto3
-import argparse
 import logging
 import json
 import re
+import typer
+from typing import Optional
 
 # Set up logging
 logging.basicConfig(
@@ -41,8 +42,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+app = typer.Typer(
+    help="Check if an IAM role has a policy with specific permissions."
+)
 
-def get_attached_policies(iam_client, role_name):
+
+def get_attached_policies(iam_client, role_name: str):
     """Get all policies attached to a role, both inline and managed."""
     inline_policies = iam_client.list_role_policies(RoleName=role_name)["PolicyNames"]
     managed_policies = iam_client.list_attached_role_policies(RoleName=role_name)[
@@ -51,7 +56,7 @@ def get_attached_policies(iam_client, role_name):
     return inline_policies, managed_policies
 
 
-def get_policy_document(iam_client, role_name, policy_name):
+def get_policy_document(iam_client, role_name: str, policy_name: str):
     """Get the document of an inline policy."""
     policy_document = iam_client.get_role_policy(
         RoleName=role_name, PolicyName=policy_name
@@ -59,7 +64,7 @@ def get_policy_document(iam_client, role_name, policy_name):
     return policy_document
 
 
-def get_managed_policy_document(iam_client, policy_arn):
+def get_managed_policy_document(iam_client, policy_arn: str):
     """Get the document of a managed policy."""
     policy = iam_client.get_policy(PolicyArn=policy_arn)
     policy_version = iam_client.get_policy_version(
@@ -69,14 +74,15 @@ def get_managed_policy_document(iam_client, policy_arn):
     return policy_document
 
 
-def match_resource(resource_pattern, resource):
+def match_resource(resource_pattern: str, resource: str):
     """Check if a resource matches a resource pattern with wildcards."""
-    # Escape special characters for regex
-    resource_pattern = resource_pattern.replace("*", ".*").replace("?", ".")
+    # Escape special characters for regex and replace AWS wildcards
+    resource_pattern = re.escape(resource_pattern)
+    resource_pattern = resource_pattern.replace(r"\*", ".*").replace(r"\?", ".")
     return re.fullmatch(resource_pattern, resource) is not None
 
 
-def check_permission(policy_document, service, action, resource):
+def check_permission(policy_document: dict, service: str, action: str, resource: str):
     """Check if the policy document contains the specified permission."""
     action_full = f"{service}:{action}"
     for statement in policy_document.get("Statement", []):
@@ -88,16 +94,20 @@ def check_permission(policy_document, service, action, resource):
         resources = statement.get("Resource", [])
         if isinstance(resources, str):
             resources = [resources]
-        if action_full in actions and any(
-            match_resource(res, resource) for res in resources
-        ):
-            conditions = statement.get("Condition", None)
-            return True, conditions
+        if action_full in actions or "*" in actions:
+            if any(match_resource(res, resource) or res == "*" for res in resources):
+                conditions = statement.get("Condition", None)
+                return True, conditions
     return False, None
 
 
 def check_role_permissions(
-    role_name, service, action, resource, profile_name, region_name="us-east-1"
+    role_name: str,
+    service: str,
+    action: str,
+    resource: str,
+    profile_name: str = "default",
+    region_name: str = "us-east-1",
 ):
     """Check if an IAM role has a policy with specific permissions and output the policies with conditions."""
     session = boto3.Session(profile_name=profile_name, region_name=region_name)
@@ -139,52 +149,53 @@ def check_role_permissions(
                 }
             )
 
-    if policies_with_permissions:
-        logger.info("Found the following policies with the specified permissions:")
-        for policy in policies_with_permissions:
-            logger.info(json.dumps(policy, indent=2))
-    else:
-        logger.info("Permission not found in any attached policy.")
-
     return policies_with_permissions
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Check if an IAM role has a policy with specific permissions"
-    )
-    parser.add_argument("role_name", help="The name of the IAM role to check")
-    parser.add_argument("service", help="The service for the permission (e.g., s3)")
-    parser.add_argument(
-        "action", help="The action for the permission (e.g., GetObject)"
-    )
-    parser.add_argument(
-        "resource",
-        help="The resource for the permission (e.g., arn:aws:s3:::example-bucket/*)",
-    )
-    parser.add_argument(
+@app.command()
+def main(
+    role_name: str = typer.Argument(..., help="The name of the IAM role to check."),
+    service: str = typer.Argument(..., help="The service for the permission (e.g., s3)."),
+    action: str = typer.Argument(..., help="The action for the permission (e.g., GetObject)."),
+    resource: str = typer.Argument(
+        ..., help="The resource for the permission (e.g., arn:aws:s3:::example-bucket/*)."
+    ),
+    profile: str = typer.Option(
+        "default",
         "--profile",
-        default="default",
-        help="The name of the AWS profile to use (default: default)",
-    )
-    parser.add_argument(
-        "--region", default="us-east-1", help="The AWS region name (default: us-east-1)"
-    )
+        help="The name of the AWS profile to use (default: default).",
+    ),
+    region: str = typer.Option(
+        "us-east-1",
+        "--region",
+        help="The AWS region name (default: us-east-1).",
+    ),
+):
+    """
+    Check if an IAM role has a policy with specific permissions.
+    """
+    try:
+        policies = check_role_permissions(
+            role_name=role_name,
+            service=service,
+            action=action,
+            resource=resource,
+            profile_name=profile,
+            region_name=region,
+        )
 
-    args = parser.parse_args()
+        if policies:
+            logger.info("Found the following policies with the specified permissions:")
+            for policy in policies:
+                typer.echo(json.dumps(policy, indent=2))
+        else:
+            logger.info("Permission not found in any attached policy.")
+            typer.echo("Permission not found in any attached policy.")
 
-    policies = check_role_permissions(
-        role_name=args.role_name,
-        service=args.service,
-        action=args.action,
-        resource=args.resource,
-        profile_name=args.profile,
-        region_name=args.region,
-    )
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise typer.Exit(code=1)
 
-    if policies:
-        print("Found the following policies with the specified permissions:")
-        for policy in policies:
-            print(json.dumps(policy, indent=2))
-    else:
-        print("Permission not found in any attached policy.")
+
+if __name__ == "__main__":
+    app()

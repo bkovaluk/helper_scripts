@@ -5,7 +5,7 @@
 Script: get_role_policy_info.py
 Description: This script returns a list of inline policies attached to an IAM role along with their character lengths,
              the total character length of all inline policies, and a list of managed policies attached to the role
-             along with the count.
+             along with the count. It also displays how close the role is to AWS IAM limits.
 
 Usage:
     python get_role_policy_info.py <role_name> [--profile PROFILE] [--region REGION]
@@ -19,65 +19,47 @@ Options:
 
 Requirements:
     - boto3
-    - argparse
+    - typer
+    - tabulate
     - logging
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
-__date__ = "2024-09-25" 
+__version__ = "1.1"
+__date__ = "2024-09-25"
 
 import boto3
-import argparse
 import logging
 import sys
 import json
+import typer
+from tabulate import tabulate
+from botocore.exceptions import ClientError
+from typing import List, Tuple
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-def get_iam_client(profile, region):
-    """
-    Get the IAM client using the specified profile and region.
+app = typer.Typer(help="Get IAM role policy information, including inline and managed policies.")
 
-    Args:
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
 
-    Returns:
-        boto3.client: The IAM client.
-    """
+def get_iam_client(profile: str, region: str):
+    """Get the IAM client using the specified profile and region."""
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('iam')
 
-def get_role(iam_client, role_name):
-    """
-    Get the specified role.
 
-    Args:
-        iam_client (boto3.client): The IAM client.
-        role_name (str): The name of the IAM role.
-
-    Returns:
-        dict: The role if it exists, or None if it doesn't.
-    """
+def get_role(iam_client, role_name: str):
+    """Get the specified role."""
     try:
         return iam_client.get_role(RoleName=role_name)['Role']
     except iam_client.exceptions.NoSuchEntityException:
         return None
 
-def get_inline_policies(iam_client, role_name):
-    """
-    Get inline policies attached to the role along with their character lengths.
 
-    Args:
-        iam_client (boto3.client): The IAM client.
-        role_name (str): The name of the IAM role.
-
-    Returns:
-        tuple: A list of tuples containing policy names and their character lengths, and the total length.
-    """
+def get_inline_policies(iam_client, role_name: str) -> Tuple[List[Tuple[str, int]], int]:
+    """Get inline policies attached to the role along with their character lengths."""
     policies = []
     total_length = 0
     paginator = iam_client.get_paginator('list_role_policies')
@@ -91,17 +73,9 @@ def get_inline_policies(iam_client, role_name):
             total_length += length
     return policies, total_length
 
-def get_managed_policies(iam_client, role_name):
-    """
-    Get the managed policies attached to the role.
 
-    Args:
-        iam_client (boto3.client): The IAM client.
-        role_name (str): The name of the IAM role.
-
-    Returns:
-        list: A list of managed policy names.
-    """
+def get_managed_policies(iam_client, role_name: str) -> List[str]:
+    """Get the managed policies attached to the role."""
     policies = []
     paginator = iam_client.get_paginator('list_attached_role_policies')
     for page in paginator.paginate(RoleName=role_name):
@@ -109,14 +83,15 @@ def get_managed_policies(iam_client, role_name):
             policies.append(policy['PolicyName'])
     return policies
 
-def main(role_name, profile='default', region='us-east-1'):
-    """
-    Main function to get role policy information.
 
-    Args:
-        role_name (str): The name of the IAM role to inspect.
-        profile (str): The AWS profile to use.
-        region (str): The AWS region to use.
+@app.command()
+def main(
+    role_name: str = typer.Argument(..., help="The name of the IAM role to inspect."),
+    profile: str = typer.Option('default', help="The AWS profile to use (default: default)."),
+    region: str = typer.Option('us-east-1', help="The AWS region to use (default: us-east-1).")
+):
+    """
+    Returns information about inline and managed policies attached to an IAM role.
     """
     try:
         iam_client = get_iam_client(profile, region)
@@ -126,6 +101,10 @@ def main(role_name, profile='default', region='us-east-1'):
             logger.error(f"Role '{role_name}' not found.")
             sys.exit(1)
 
+        # AWS IAM Limits
+        INLINE_POLICY_SIZE_LIMIT = 10240  # 10,240 characters
+        MANAGED_POLICY_LIMIT = 10  # Maximum number of managed policies per role
+
         inline_policies, total_inline_length = get_inline_policies(iam_client, role_name)
         managed_policies = get_managed_policies(iam_client, role_name)
         managed_policy_count = len(managed_policies)
@@ -133,31 +112,41 @@ def main(role_name, profile='default', region='us-east-1'):
         # Output
         logger.info(f"Role Name: {role_name}\n")
 
+        # Inline Policies
         logger.info("Inline Policies and their Character Lengths:")
         if inline_policies:
-            for policy_name, length in inline_policies:
-                logger.info(f"  - {policy_name}: {length} characters")
-            logger.info(f"\nTotal Character Length of All Inline Policies: {total_inline_length}\n")
+            inline_table = [[name, length] for name, length in inline_policies]
+            logger.info(tabulate(inline_table, headers=["Policy Name", "Characters"], tablefmt="pretty"))
+            logger.info(f"\nTotal Character Length of All Inline Policies: {total_inline_length} / {INLINE_POLICY_SIZE_LIMIT}")
+            if total_inline_length >= INLINE_POLICY_SIZE_LIMIT:
+                logger.warning("Warning: Total inline policy size has reached or exceeded the AWS limit!")
+            else:
+                remaining_chars = INLINE_POLICY_SIZE_LIMIT - total_inline_length
+                logger.info(f"Remaining characters before reaching limit: {remaining_chars}\n")
         else:
             logger.info("  No inline policies attached.\n")
 
+        # Managed Policies
         logger.info("Managed Policies Attached:")
         if managed_policies:
-            for policy_name in managed_policies:
-                logger.info(f"  - {policy_name}")
-            logger.info(f"\nTotal Number of Managed Policies Attached: {managed_policy_count}")
+            managed_table = [[name] for name in managed_policies]
+            logger.info(tabulate(managed_table, headers=["Policy Name"], tablefmt="pretty"))
+            logger.info(f"\nTotal Number of Managed Policies Attached: {managed_policy_count} / {MANAGED_POLICY_LIMIT}")
+            if managed_policy_count >= MANAGED_POLICY_LIMIT:
+                logger.warning("Warning: Managed policy count has reached or exceeded the AWS limit!")
+            else:
+                remaining_policies = MANAGED_POLICY_LIMIT - managed_policy_count
+                logger.info(f"Remaining managed policies before reaching limit: {remaining_policies}")
         else:
             logger.info("  No managed policies attached.")
 
+    except ClientError as e:
+        logger.error(f"AWS ClientError: {e}")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         sys.exit(1)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Get IAM role policy information, including inline policies and managed policies.")
-    parser.add_argument('role_name', help="The name of the IAM role to inspect.")
-    parser.add_argument('--profile', default='default', help="The AWS profile to use (default: default).")
-    parser.add_argument('--region', default='us-east-1', help="The AWS region to use (default: us-east-1).")
-    args = parser.parse_args()
 
-    main(args.role_name, args.profile, args.region)
+if __name__ == '__main__':
+    app()
