@@ -57,7 +57,7 @@ def get_inline_policies(iam_client, role_name: str):
             policy = iam_client.get_role_policy(RoleName=role_name, PolicyName=policy_name)
             policy_document = policy['PolicyDocument']
             policy_json = json.dumps(policy_document, separators=(',', ':'))
-            length = len(policy_json)
+            length = len(policy_json.encode('utf-8'))
             policies.append({'Name': policy_name, 'Type': 'Inline', 'Size': length})
             total_length += length
     return policies, total_length
@@ -71,16 +71,63 @@ def get_managed_policies(iam_client, role_name: str):
             policies.append({'Name': policy['PolicyName'], 'Type': 'Managed'})
     return policies
 
-def get_quota(service_quotas_client, service_code: str, quota_code: str):
-    """Get the current value of a specific service quota."""
+def get_iam_quotas(profile: str, region: str):
+    """Retrieve IAM quotas using quota codes and return relevant limits."""
+    quotas = {}
     try:
+        # Initialize Service Quotas client inside this function
+        session = boto3.Session(profile_name=profile, region_name=region)
+        service_quotas_client = session.client('service-quotas')
+
+        # Maximum inline policy size (in bytes)
         response = service_quotas_client.get_service_quota(
-            ServiceCode=service_code,
-            QuotaCode=quota_code
+            ServiceCode='iam',
+            QuotaCode='L-15F2AE72'  # Quota code for Maximum inline policy size (B)
         )
-        return response['Quota']['Value']
-    except ClientError:
-        return None
+        quotas['InlinePolicySizeLimit'] = response['Quota']['Value']
+
+        # Maximum managed policies attached to an IAM role
+        response = service_quotas_client.get_service_quota(
+            ServiceCode='iam',
+            QuotaCode='L-F55EF660'  # Quota code for Maximum managed policies attached to an IAM role
+        )
+        quotas['ManagedPolicyLimit'] = response['Quota']['Value']
+
+        # Maximum managed policy size (in bytes)
+        response = service_quotas_client.get_service_quota(
+            ServiceCode='iam',
+            QuotaCode='L-EEF82912'  # Quota code for Maximum managed policy document size (B)
+        )
+        quotas['ManagedPolicySizeLimit'] = response['Quota']['Value']
+
+    except ClientError as e:
+        print(f"Error retrieving IAM quotas: {e}")
+
+    return quotas
+
+def generate_table_output(role_name, all_policies, total_inline_length, inline_policy_size_limit, total_managed_policies, managed_policy_limit):
+    """Generate and display the policies table with totals included."""
+    # Prepare data for table
+    table_data = []
+    for policy in all_policies:
+        if policy['Type'] == 'Inline':
+            table_data.append([policy['Name'], policy['Type'], f"{policy['Size']} bytes"])
+        else:
+            table_data.append([policy['Name'], policy['Type'], "-"])
+    
+    # Add separator row
+    table_data.append([None, None, None])
+    
+    # Add totals row(s)
+    table_data.append(['Total Inline Policies Size', '', f"{total_inline_length} / {int(inline_policy_size_limit)} bytes"])
+    table_data.append(['Total Managed Policies Attached', '', f"{total_managed_policies} / {int(managed_policy_limit)}"])
+    
+    # Output policies table
+    print(f"\nIAM Role: {role_name}")
+    if table_data:
+        print(tabulate(table_data, headers=["Policy Name", "Policy Type", "Size"], tablefmt="psql"))
+    else:
+        print("No policies attached to this role.")
 
 @app.command()
 def main(
@@ -92,9 +139,8 @@ def main(
     Displays concise information about policies attached to an IAM role.
     """
     try:
-        # Initialize AWS clients
+        # Initialize IAM client
         iam_client = get_aws_client('iam', profile, region)
-        service_quotas_client = get_aws_client('service-quotas', profile, region)
 
         # Retrieve the IAM role
         role = get_role(iam_client, role_name)
@@ -102,9 +148,11 @@ def main(
             print(f"Error: Role '{role_name}' not found.")
             sys.exit(1)
 
-        # Get AWS IAM limits from Service Quotas
-        inline_policy_size_limit = get_quota(service_quotas_client, 'iam', 'L-15F2AE72') or 10240
-        managed_policy_limit = get_quota(service_quotas_client, 'iam', 'L-F55EF660') or 10
+        # Get AWS IAM limits from Service Quotas using quota codes
+        iam_quotas = get_iam_quotas(profile, region)
+        inline_policy_size_limit = iam_quotas.get('InlinePolicySizeLimit', 10240)  # Default to 10 KB
+        managed_policy_limit = iam_quotas.get('ManagedPolicyLimit', 10)  # Default to 10
+        managed_policy_size_limit = iam_quotas.get('ManagedPolicySizeLimit', 6144)  # Default to 6 KB
 
         # Retrieve policies
         inline_policies, total_inline_length = get_inline_policies(iam_client, role_name)
@@ -114,32 +162,22 @@ def main(
         # Combine policies for display
         all_policies = inline_policies + managed_policies
 
-        # Prepare data for table
-        table_data = []
-        for policy in all_policies:
-            if policy['Type'] == 'Inline':
-                table_data.append([policy['Name'], policy['Type'], f"{policy['Size']} bytes"])
-            else:
-                table_data.append([policy['Name'], policy['Type'], "-"])
+        # Generate and display the policies table
+        generate_table_output(
+            role_name,
+            all_policies,
+            total_inline_length,
+            inline_policy_size_limit,
+            total_managed_policies,
+            managed_policy_limit
+        )
 
-        # Output
-        print(f"\nIAM Role: {role_name}")
-        if table_data:
-            print(tabulate(table_data, headers=["Policy Name", "Policy Type", "Size"], tablefmt="pretty"))
-        else:
-            print("No policies attached to this role.")
-
-        # Display limits and usage
-        print("\nPolicy Limits and Usage:")
-        print(f"- Inline Policies Size: {total_inline_length} / {int(inline_policy_size_limit)} bytes")
-        print(f"- Managed Policies Attached: {total_managed_policies} / {int(managed_policy_limit)}")
-
-        # Check limits
+        # Check limits and display warnings
         if total_inline_length >= inline_policy_size_limit:
-            print("Warning: Total inline policy size has reached or exceeded the AWS limit!")
+            print("\nWarning: Total inline policy size has reached or exceeded the AWS limit!")
 
         if total_managed_policies >= managed_policy_limit:
-            print("Warning: Managed policy count has reached or exceeded the AWS limit!")
+            print("\nWarning: Managed policy count has reached or exceeded the AWS limit!")
 
     except ClientError as e:
         print(f"Error: {e}")
@@ -150,3 +188,4 @@ def main(
 
 if __name__ == '__main__':
     app()
+    
