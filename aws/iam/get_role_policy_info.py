@@ -87,9 +87,9 @@ def get_iam_quotas(profile: str, region: str):
     """Retrieve IAM quotas by listing IAM service quotas and searching for the desired limits."""
     # Mapping of quota names to internal keys and default values
     desired_quotas = {
-        'Maximum inline policy size (B)': ('InlinePolicySizeLimit', 10240),
-        'Maximum managed policies attached to an IAM role': ('ManagedPolicyLimit', 10),
-        'Maximum managed policy document size (B)': ('ManagedPolicySizeLimit', 6144),
+        'Inline policy length': ('InlinePolicySizeLimit', 10240),
+        'Managed policies per role': ('ManagedPolicyLimit', 10),
+        'Managed policy length': ('ManagedPolicySizeLimit', 6144),
     }
     # Initialize quotas with default values
     quotas = {value[0]: value[1] for value in desired_quotas.values()}
