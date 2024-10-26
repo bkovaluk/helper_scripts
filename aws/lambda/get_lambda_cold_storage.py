@@ -6,12 +6,13 @@ Script: get_lambda_cold_storage.py
 Description: This script retrieves AWS Lambda function versions in "cold storage" (inactive versions based on last modification date).
 
 Usage:
-    python get_lambda_cold_storage.py [--days-old DAYS] [--profile PROFILE] [--region REGION]
+    python get_lambda_cold_storage.py [--days-old DAYS] [--profile PROFILE] [--region REGION] [--verbose]
 
 Options:
     --days-old DAYS     Number of days since last modification to consider a version in cold storage (default: 30).
     --profile PROFILE   The name of the AWS profile to use (default: default).
     --region REGION     The AWS region name (default: us-east-1).
+    --verbose           Enable verbose output to see iteration through Lambda functions.
 
 Requirements:
     - boto3
@@ -20,8 +21,8 @@ Requirements:
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.0"
-__date__ = "2024-10-25"
+__version__ = "1.2"
+__date__ = "2024-10-26"
 
 import boto3
 import typer
@@ -30,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from rich import print
 from rich.logging import RichHandler
 from rich.console import Console
+from rich.table import Table
 from typing import Dict, List
 
 # Configure Rich logging
@@ -47,7 +49,7 @@ def get_lambda_versions_in_cold_storage(
     lambda_client,
     days_old: int = 30,
     verbose: bool = False
-) -> Dict[str, List[Dict[str, str]]]:
+) -> Dict[str, Dict[str, int]]:
     """
     Retrieves Lambda function versions in cold storage based on inactivity threshold.
     
@@ -57,16 +59,13 @@ def get_lambda_versions_in_cold_storage(
         verbose (bool): If True, enables verbose output to track iteration.
         
     Returns:
-        dict: Dictionary with function name as key and list of inactive versions with sizes as value.
+        dict: Dictionary with function name as key and count of inactive versions and total size as values.
     """
     cold_storage_versions = {}
     threshold_date = datetime.now(timezone.utc) - timedelta(days=days_old)
 
     paginator = lambda_client.get_paginator("list_functions")
     function_pages = paginator.paginate()
-
-    total_functions_checked = 0
-    total_versions_in_cold_storage = 0
 
     for page in function_pages:
         for function in page["Functions"]:
@@ -77,6 +76,9 @@ def get_lambda_versions_in_cold_storage(
             version_paginator = lambda_client.get_paginator("list_versions_by_function")
             version_pages = version_paginator.paginate(FunctionName=function_name)
 
+            version_count = 0
+            total_size = 0
+
             for version_page in version_pages:
                 for version in version_page["Versions"]:
                     if version["Version"] == "$LATEST":
@@ -84,23 +86,19 @@ def get_lambda_versions_in_cold_storage(
 
                     last_modified = datetime.strptime(version["LastModified"], '%Y-%m-%dT%H:%M:%S.%f%z')
                     if last_modified < threshold_date:
-                        if function_name not in cold_storage_versions:
-                            cold_storage_versions[function_name] = []
+                        version_count += 1
+                        total_size += version["CodeSize"]
                         
-                        version_info = {
-                            "Version": version["Version"],
-                            "Size": version["CodeSize"],
-                            "LastModified": version["LastModified"]
-                        }
-                        cold_storage_versions[function_name].append(version_info)
-                        total_versions_in_cold_storage += 1
-
                         if verbose:
-                            logger.info(f"  - Cold storage version: {version_info['Version']} (Size: {version_info['Size']} bytes)")
+                            logger.info(f"  - Cold storage version: {version['Version']} (Size: {version['CodeSize']} bytes)")
 
-            total_functions_checked += 1
+            if version_count > 0:
+                cold_storage_versions[function_name] = {
+                    "VersionCount": version_count,
+                    "TotalSize": total_size
+                }
 
-    return cold_storage_versions, total_functions_checked, total_versions_in_cold_storage
+    return cold_storage_versions
 
 @app.command()
 def main(
@@ -116,7 +114,7 @@ def main(
         session = boto3.Session(profile_name=profile, region_name=region)
         lambda_client = session.client("lambda")
 
-        cold_storage_versions, total_functions_checked, total_versions_in_cold_storage = get_lambda_versions_in_cold_storage(
+        cold_storage_versions = get_lambda_versions_in_cold_storage(
             lambda_client=lambda_client,
             days_old=days_old,
             verbose=verbose
@@ -125,15 +123,23 @@ def main(
         if not cold_storage_versions:
             console.print("[bold green]No Lambda versions found in cold storage.[/bold green]")
         else:
-            console.print("[bold cyan]Lambda versions in cold storage:[/bold cyan]")
-            for function_name, versions in cold_storage_versions.items():
-                console.print(f"[bold]{function_name}:[/bold]")
-                for version in versions:
-                    console.print(f"  - Version: {version['Version']}, Size: {version['Size']} bytes, Last Modified: {version['LastModified']}")
+            # Prepare table output
+            table = Table(title="Lambda Functions in Cold Storage")
+            table.add_column("Function Name", style="bold cyan")
+            table.add_column("Cold Versions", style="magenta", justify="right")
+            table.add_column("Total Size (bytes)", style="green", justify="right")
 
-            console.print("\n[bold yellow]Summary:[/bold yellow]")
-            console.print(f"[bold]- Total functions checked:[/bold] {total_functions_checked}")
-            console.print(f"[bold]- Total versions in cold storage:[/bold] {total_versions_in_cold_storage}")
+            total_storage_size = 0
+            for function_name, data in cold_storage_versions.items():
+                table.add_row(
+                    function_name,
+                    str(data["VersionCount"]),
+                    str(data["TotalSize"])
+                )
+                total_storage_size += data["TotalSize"]
+
+            console.print(table)
+            console.print(f"\n[bold yellow]Total Cold Storage Size:[/bold yellow] {total_storage_size} bytes")
     except Exception as e:
         logger.error(f"[bold red]Error:[/bold red] {str(e)}")
         raise typer.Exit(code=1)
