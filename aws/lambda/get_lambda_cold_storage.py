@@ -123,26 +123,31 @@ def main(
         if not cold_storage_versions:
             console.print("[bold green]No Lambda versions found in cold storage.[/bold green]")
         else:
+            # Prepare table output
             table = Table(title="Lambda Functions in Cold Storage (Sorted by Total Size)")
             table.add_column("Function Name", style="bold cyan")
             table.add_column("Cold Versions", style="magenta", justify="right")
-            table.add_column("Total Size (bytes)", style="green", justify="right")
+            table.add_column("Total Size (MB)", style="green", justify="right")
 
+            total_storage_size = 0
             sorted_cold_storage_versions = dict(
                 sorted(cold_storage_versions.items(), key=lambda item: item[1]["TotalSize"], reverse=True)
             )
 
-            total_storage_size = 0
             for function_name, data in sorted_cold_storage_versions.items():
+                size_mb = data["TotalSize"] / (1024 * 1024)  # Convert to MB
                 table.add_row(
                     function_name,
                     str(data["VersionCount"]),
-                    str(data["TotalSize"])
+                    f"{size_mb:.2f} MB"
                 )
                 total_storage_size += data["TotalSize"]
 
             console.print(table)
-            console.print(f"\n[bold yellow]Total Cold Storage Size:[/bold yellow] {total_storage_size} bytes")
+
+            # Convert total storage size to GB
+            total_storage_gb = total_storage_size / (1024 * 1024 * 1024)
+            console.print(f"\n[bold yellow]Total Cold Storage Size:[/bold yellow] {total_storage_gb:.2f} GB")
     except Exception as e:
         logger.error(f"[bold red]Error:[/bold red] {str(e)}")
         raise typer.Exit(code=1)
