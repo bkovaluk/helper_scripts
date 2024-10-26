@@ -26,7 +26,7 @@ __date__ = "2024-10-25"
 import boto3
 import typer
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from rich import print
 from rich.logging import RichHandler
 from rich.console import Console
@@ -58,7 +58,7 @@ def get_lambda_versions_in_cold_storage(
         dict: Dictionary with function name as key and list of inactive versions as value.
     """
     cold_storage_versions = {}
-    threshold_date = datetime.now() - timedelta(days=days_old)
+    threshold_date = datetime.now(timezone.utc) - timedelta(days=days_old)
 
     functions = iam_client.list_functions()["Functions"]
     for function in functions:
