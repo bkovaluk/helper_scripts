@@ -44,44 +44,70 @@ console = Console()
 app = typer.Typer(help="Retrieve AWS Lambda function versions in cold storage.")
 
 def get_lambda_versions_in_cold_storage(
-    iam_client,
-    days_old: int = 30
-) -> Dict[str, List[str]]:
+    lambda_client,
+    days_old: int = 30,
+    verbose: bool = False
+) -> Dict[str, List[Dict[str, str]]]:
     """
     Retrieves Lambda function versions in cold storage based on inactivity threshold.
     
     Args:
-        iam_client: The AWS Lambda client.
+        lambda_client: The AWS Lambda client.
         days_old (int): Number of days to consider a version inactive (default: 30).
+        verbose (bool): If True, enables verbose output to track iteration.
         
     Returns:
-        dict: Dictionary with function name as key and list of inactive versions as value.
+        dict: Dictionary with function name as key and list of inactive versions with sizes as value.
     """
     cold_storage_versions = {}
     threshold_date = datetime.now(timezone.utc) - timedelta(days=days_old)
 
-    functions = iam_client.list_functions()["Functions"]
-    for function in functions:
-        function_name = function["FunctionName"]
-        versions = iam_client.list_versions_by_function(FunctionName=function_name)["Versions"]
-        
-        for version in versions:
-            if version["Version"] == "$LATEST":
-                continue
+    paginator = lambda_client.get_paginator("list_functions")
+    function_pages = paginator.paginate()
 
-            last_modified = datetime.strptime(version["LastModified"], '%Y-%m-%dT%H:%M:%S.%f%z')
-            if last_modified < threshold_date:
-                if function_name not in cold_storage_versions:
-                    cold_storage_versions[function_name] = []
-                cold_storage_versions[function_name].append(version["Version"])
+    total_functions_checked = 0
+    total_versions_in_cold_storage = 0
 
-    return cold_storage_versions
+    for page in function_pages:
+        for function in page["Functions"]:
+            function_name = function["FunctionName"]
+            if verbose:
+                logger.info(f"Checking function: {function_name}")
+
+            version_paginator = lambda_client.get_paginator("list_versions_by_function")
+            version_pages = version_paginator.paginate(FunctionName=function_name)
+
+            for version_page in version_pages:
+                for version in version_page["Versions"]:
+                    if version["Version"] == "$LATEST":
+                        continue
+
+                    last_modified = datetime.strptime(version["LastModified"], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    if last_modified < threshold_date:
+                        if function_name not in cold_storage_versions:
+                            cold_storage_versions[function_name] = []
+                        
+                        version_info = {
+                            "Version": version["Version"],
+                            "Size": version["CodeSize"],
+                            "LastModified": version["LastModified"]
+                        }
+                        cold_storage_versions[function_name].append(version_info)
+                        total_versions_in_cold_storage += 1
+
+                        if verbose:
+                            logger.info(f"  - Cold storage version: {version_info['Version']} (Size: {version_info['Size']} bytes)")
+
+            total_functions_checked += 1
+
+    return cold_storage_versions, total_functions_checked, total_versions_in_cold_storage
 
 @app.command()
 def main(
     days_old: int = typer.Option(30, "--days-old", help="Number of days since last modification to consider a version in cold storage."),
     profile: str = typer.Option("default", "--profile", help="The name of the AWS profile to use."),
     region: str = typer.Option("us-east-1", "--region", help="The AWS region name."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose output to see iteration through Lambda functions.")
 ):
     """
     Retrieve AWS Lambda function versions in cold storage based on inactivity threshold.
@@ -90,14 +116,24 @@ def main(
         session = boto3.Session(profile_name=profile, region_name=region)
         lambda_client = session.client("lambda")
 
-        cold_storage_versions = get_lambda_versions_in_cold_storage(lambda_client, days_old)
+        cold_storage_versions, total_functions_checked, total_versions_in_cold_storage = get_lambda_versions_in_cold_storage(
+            lambda_client=lambda_client,
+            days_old=days_old,
+            verbose=verbose
+        )
 
         if not cold_storage_versions:
             console.print("[bold green]No Lambda versions found in cold storage.[/bold green]")
         else:
             console.print("[bold cyan]Lambda versions in cold storage:[/bold cyan]")
             for function_name, versions in cold_storage_versions.items():
-                console.print(f"[bold]{function_name}:[/bold] {', '.join(versions)}")
+                console.print(f"[bold]{function_name}:[/bold]")
+                for version in versions:
+                    console.print(f"  - Version: {version['Version']}, Size: {version['Size']} bytes, Last Modified: {version['LastModified']}")
+
+            console.print("\n[bold yellow]Summary:[/bold yellow]")
+            console.print(f"[bold]- Total functions checked:[/bold] {total_functions_checked}")
+            console.print(f"[bold]- Total versions in cold storage:[/bold] {total_versions_in_cold_storage}")
     except Exception as e:
         logger.error(f"[bold red]Error:[/bold red] {str(e)}")
         raise typer.Exit(code=1)
