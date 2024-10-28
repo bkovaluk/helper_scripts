@@ -3,232 +3,134 @@
 
 """
 Script: package_lambda.py
-Description: This script packages a Python Lambda function, including dependencies from a requirements.txt file, into a zip file for deployment.
-             It excludes packages that are already included in the AWS Lambda runtime.
+Description: A modernized script to package a Python Lambda function with dependencies, using Docker for isolation
+             or directly installing dependencies if Docker is unavailable.
 
 Usage:
-    python package_lambda.py <base_dir> [--log-level LOG_LEVEL]
+    python package_lambda.py <base_dir> [--log-level LOG_LEVEL] [--use-docker]
 
 Arguments:
-    base_dir          The base directory path of the Lambda function.
+    base_dir: The root directory of the Lambda function.
 
 Options:
-    --log-level LOG_LEVEL The logging level (default: INFO).
+    --log-level LOG_LEVEL: Set logging level (default: INFO).
+    --use-docker: Use Docker to package dependencies in a Lambda-compatible environment (default: False).
+    --python-version: Specify the Python version for Lambda runtime compatibility (default: 3.8).
+    --requirements-file: Specify an alternative requirements file (default: requirements.txt).
 
 Requirements:
-    - venv
-    - pip
-    - logging
+    - Docker (optional)
+    - Rich
+    - Typer
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.2"
-__date__ = "2023-10-29"
+__version__ = "2.0"
+__date__ = "2024-10-28"
 
-import os
-import platform
+
 import shutil
-import zipfile
+from pathlib import Path
+import typer
+from rich.logging import RichHandler
+from rich.console import Console
 import logging
-import argparse
-import venv
 import subprocess
+from typing import Optional
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Top-level configuration
+EXCLUDED_PACKAGES = {'boto3', 'botocore'}
+PACKAGE_DIR_NAME = 'package'
+RELEASE_DIR_NAME = 'release'
+DEFAULT_PYTHON_VERSION = '3.11'
+DEFAULT_REQUIREMENTS_FILE = 'requirements.txt'
 
-EXCLUDED_PACKAGES = ['boto3', 'botocore']
+# Configure Rich console and logger
+console = Console()
+logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[RichHandler(rich_tracebacks=True)])
+logger = logging.getLogger("lambda-packager")
 
-def create_venv(base_dir):
-    """
-    Create a virtual environment if it doesn't already exist.
+# Initialize Typer app
+app = typer.Typer(help="Package a Python Lambda function into a zip file for AWS deployment.")
 
-    Args:
-        base_dir (str): The base directory path.
+def install_dependencies(base_dir: Path, use_docker: bool, python_version: str, requirements_file: str):
+    """Install dependencies either directly or in Docker, depending on the flag."""
+    requirements_path = base_dir / requirements_file
+    if not requirements_path.exists():
+        console.print("[yellow]Requirements file not found; skipping dependency installation.[/yellow]")
+        return
 
-    """
-    venv_path = os.path.join(base_dir, 'venv')
-    if not os.path.exists(venv_path):
-        logger.info("Creating virtual environment...")
-        venv.create(venv_path, with_pip=True)
-        logger.info("Virtual environment created.")
+    package_dir = base_dir / PACKAGE_DIR_NAME
+    package_dir.mkdir(exist_ok=True)
+
+    if use_docker:
+        # Use Docker to install dependencies in a Lambda-compatible environment
+        console.print(f"[blue]Using Docker to package dependencies with Python {python_version}...[/blue]")
+        docker_image = f"public.ecr.aws/lambda/python:{python_version}"
+        docker_command = [
+            "docker", "run", "--rm", "-v", f"{base_dir}:/var/task",
+            docker_image,
+            "pip", "install", "-r", f"/var/task/{requirements_file}", "-t", f"/var/task/{PACKAGE_DIR_NAME}"
+        ]
+        subprocess.run(docker_command, check=True)
     else:
-        logger.info("Virtual environment already exists.")
+        # Local installation of dependencies
+        console.print(f"[blue]Installing dependencies locally for Python {python_version}...[/blue]")
+        subprocess.run([
+            "pip", "install", "-r", str(requirements_path), "-t", str(package_dir)
+        ], check=True)
 
-def get_python_executable(base_dir):
-    """
-    Get the path to the Python executable within the virtual environment.
+def package_lambda(base_dir: Path):
+    """Package Lambda function with dependencies."""
+    release_dir = base_dir / RELEASE_DIR_NAME
+    package_dir = base_dir / PACKAGE_DIR_NAME
 
-    Args:
-        base_dir (str): The base directory path.
-
-    Returns:
-        str: The path to the Python executable.
-
-    """
-    venv_python = os.path.join(base_dir, 'venv', 'bin', 'python')
-    if platform.system() == 'Windows':
-        venv_python = os.path.join(base_dir, 'venv', 'Scripts', 'python.exe')
-    return venv_python
-
-def upgrade_pip(base_dir):
-    """
-    Upgrade pip within the virtual environment.
-
-    Args:
-        base_dir (str): The base directory path.
-
-    """
-    venv_python = get_python_executable(base_dir)
-    logger.info("Upgrading pip...")
-    subprocess.check_call([venv_python, '-m', 'pip', 'install', '--upgrade', 'pip'])
-    logger.info("pip upgraded.")
-
-def install_requirements(base_dir):
-    """
-    Install requirements from the requirements.txt file within the virtual environment.
-
-    Args:
-        base_dir (str): The base directory path.
-
-    """
-    venv_python = get_python_executable(base_dir)
-    requirements_path = os.path.join(base_dir, 'requirements.txt')
-    if os.path.exists(requirements_path):
-        logger.info("Installing requirements...")
-        subprocess.check_call([venv_python, '-m', 'pip', 'install', '-r', requirements_path])
-        logger.info("Requirements installed.")
-    else:
-        logger.warning("requirements.txt not found. Skipping dependency installation.")
-
-def uninstall_excluded_packages(base_dir):
-    """
-    Uninstall packages that are included in the AWS Lambda runtime.
-
-    Args:
-        base_dir (str): The base directory path.
-    """
-    venv_python = get_python_executable(base_dir)
-    for package in EXCLUDED_PACKAGES:
-        logger.info(f"Uninstalling {package}...")
-        subprocess.call([venv_python, '-m', 'pip', 'uninstall', '-y', package])
-
-def package_lambda(base_dir):
-    """
-    Package the Lambda function and its dependencies.
-
-    Args:
-        base_dir (str): The base directory path.
-
-    """
-    release_dir = os.path.join(base_dir, 'release')
-
-    # Delete the release directory if it already exists
-    if os.path.exists(release_dir):
+    # Clear the release directory if it exists
+    if release_dir.exists():
         shutil.rmtree(release_dir)
+    release_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create the release directory
-    os.makedirs(release_dir, exist_ok=True)
+    # Copy dependencies from the package directory, skipping excluded packages
+    for item in package_dir.iterdir():
+        if item.is_dir() and item.name not in EXCLUDED_PACKAGES:
+            shutil.copytree(item, release_dir / item.name, dirs_exist_ok=True)
+        elif item.is_file() and item.name.split('-')[0] not in EXCLUDED_PACKAGES:
+            shutil.copy2(item, release_dir / item.name)
 
-    # Determine the site-packages directory within the virtual environment
-    site_packages_dir = os.path.join(base_dir, 'venv', 'lib',
-                                     'python%s' % platform.python_version()[:3], 'site-packages')
-    if platform.system() == 'Windows':
-        site_packages_dir = os.path.join(base_dir, 'venv', 'Lib', 'site-packages')
+    # Copy the Lambda function code
+    for item in base_dir.iterdir():
+        if item.is_dir() and item.name not in {PACKAGE_DIR_NAME, RELEASE_DIR_NAME, 'tests'}:
+            shutil.copytree(item, release_dir / item.name, dirs_exist_ok=True)
+        elif item.is_file():
+            shutil.copy2(item, release_dir / item.name)
 
-    # Copy everything from site-packages to the release directory
-    copytree(site_packages_dir, release_dir)
+    # Zip the release directory for deployment
+    zip_path = shutil.make_archive(str(base_dir / base_dir.name), 'zip', root_dir=release_dir)
+    console.print(f"[green]Packaged Lambda function to {zip_path}[/green]")
 
-    # Copy everything else from the base directory to the release directory,
-    # excluding the virtual environment, the release directory itself, and the 'tests' directory
-    for item in os.listdir(base_dir):
-        item_path = os.path.join(base_dir, item)
-        if os.path.isdir(item_path) and item not in ['venv', 'release', 'tests']:
-            copytree(item_path, os.path.join(release_dir, item))
-        elif os.path.isfile(item_path):
-            shutil.copy2(item_path, release_dir)
+    # Clean up the package directory after zipping
+    if package_dir.exists():
+        shutil.rmtree(package_dir)
 
-    zip_release(base_dir)
-
-    logger.info("Lambda function packaged.")
-
-def copytree(src, dst, symlinks=False, ignore=None):
-    """
-    This function is a slightly modified version of shutil.copytree.
-    It can handle the case where the destination directory already exists
-    and explicitly creates directories before copying files.
-
-    """
-    if not os.path.exists(dst):
-        os.makedirs(dst)
-
-    for item in os.listdir(src):
-        s = os.path.join(src, item)
-        d = os.path.join(dst, item)
-        if os.path.isdir(s):
-            copytree(s, d, symlinks, ignore)
-        else:
-            shutil.copy2(s, d)
-
-def zip_release(base_dir):
-    """
-    Create a zip file from the contents of the release directory.
-
-    Args:
-        base_dir (str): The base directory path.
-
-    """
-    release_dir = os.path.join(base_dir, 'release')
-
-    # Use the base directory name as the zip file name
-    zip_file_name = os.path.basename(os.path.normpath(base_dir)) + '.zip'
-    zipf = zipfile.ZipFile(os.path.join(base_dir, zip_file_name), 'w', zipfile.ZIP_DEFLATED)
-
-    for root, dirs, files in os.walk(release_dir):
-        for file in files:
-            # Create a relative path to preserve directory structure within the zip
-            relative_path = os.path.relpath(os.path.join(root, file), release_dir)
-            zipf.write(os.path.join(root, file), arcname=relative_path)
-
-    zipf.close()
-    logger.info("Created zip file from release directory.")
-
-def main(base_dir, log_level='INFO'):
-    """
-    Main function to package the Lambda function and its dependencies.
-
-    Args:
-        base_dir (str): The base directory path.
-        log_level (str): The logging level to use.
-    """
-    logging.getLogger().setLevel(log_level.upper())
-    logger.info("Starting script.")
+@app.command()
+def main(
+    base_dir: Path = typer.Argument(..., help="The base directory path of the Lambda function."),
+    log_level: Optional[str] = typer.Option('INFO', "--log-level", help="Set logging level (default: INFO)"),
+    use_docker: bool = typer.Option(False, "--use-docker", help="Use Docker to package dependencies (default: False)"),
+    python_version: str = typer.Option(DEFAULT_PYTHON_VERSION, "--python-version", help="Python version for Lambda runtime compatibility (default: 3.8)"),
+    requirements_file: str = typer.Option(DEFAULT_REQUIREMENTS_FILE, "--requirements-file", help="Path to the requirements file (default: requirements.txt)")
+):
+    """Main function for packaging Lambda function."""
+    logger.setLevel(log_level.upper())
+    logger.info("Starting Lambda packaging script...")
 
     try:
-        # Create virtual environment
-        create_venv(base_dir)
-
-        # Upgrade pip
-        upgrade_pip(base_dir)
-
-        # Install requirements
-        install_requirements(base_dir)
-
-        # Uninstall excluded packages
-        uninstall_excluded_packages(base_dir)
-
-        # Package Lambda function
+        install_dependencies(base_dir, use_docker, python_version, requirements_file)
         package_lambda(base_dir)
-
-        logger.info("Script execution completed.")
+        logger.info("Packaging completed successfully.")
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
+        console.print(f"[red]An error occurred: {str(e)}[/red]")
+        raise typer.Exit(code=1)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Package a Python Lambda function, including dependencies from a requirements.txt file, into a zip file for deployment.")
-    parser.add_argument('base_dir', help="The base directory path of the Lambda function.")
-    parser.add_argument('--log-level', default='INFO', help="The logging level to use (default: INFO).")
-    args = parser.parse_args()
-
-    main(args.base_dir, args.log_level)
+if __name__ == "__main__":
+    app()
