@@ -27,8 +27,12 @@ from rich.console import Console
 from rich.logging import RichHandler
 import logging
 
-console = Console()
-logging.basicConfig(level="INFO", format="%(message)s", handlers=[RichHandler()])
+console = Console(force_terminal=True)
+logging.basicConfig(
+    level="INFO",
+    format="%(message)s",
+    handlers=[RichHandler(console=console, markup=True, rich_tracebacks=True)]
+)
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Add or update multiple tags on an S3 bucket, preserving existing tags.")
