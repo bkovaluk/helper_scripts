@@ -73,7 +73,6 @@ def get_lambda_error_rate_last_hour(
             if verbose:
                 logger.info(f"Checking function: {function_name}")
 
-            # Get Invocations
             invocations = cloudwatch_client.get_metric_statistics(
                 Namespace="AWS/Lambda",
                 MetricName="Invocations",
@@ -85,7 +84,6 @@ def get_lambda_error_rate_last_hour(
             )
             total_invocations = sum(dp["Sum"] for dp in invocations["Datapoints"])
 
-            # Get Errors
             errors = cloudwatch_client.get_metric_statistics(
                 Namespace="AWS/Lambda",
                 MetricName="Errors",
@@ -97,7 +95,6 @@ def get_lambda_error_rate_last_hour(
             )
             total_errors = sum(dp["Sum"] for dp in errors["Datapoints"])
 
-            # Calculate error rate
             if total_invocations > 0:
                 error_rate = (total_errors / total_invocations) * 100
             else:
