@@ -7,7 +7,7 @@ Description: This script creates an ACM certificate with a primary FQDN and opti
              By default, it uses email validation, but the user can specify DNS validation.
 
 Usage:
-    python create_acm_certificate.py <primary_fqdn> [--additional-names ADDITIONAL_NAMES] [--validation-method VALIDATION_METHOD] [--validation-emails VALIDATION_EMAILS] [--profile PROFILE] [--region REGION]
+    python create_acm_certificate.py <primary_fqdn> [--additional-names ADDITIONAL_NAMES] [--validation-method VALIDATION_METHOD] [--validation-domains VALIDATION_DOMAINS] [--profile PROFILE] [--region REGION]
 
 Arguments:
     primary_fqdn       The primary fully qualified domain name (FQDN) for the certificate.
@@ -15,7 +15,7 @@ Arguments:
 Options:
     --additional-names ADDITIONAL_NAMES Comma-delimited list of additional FQDNs.
     --validation-method VALIDATION_METHOD The validation method to use (dns or email, default: email).
-    --validation-emails VALIDATION_EMAILS Comma-delimited list of email addresses for email validation.
+    --validation-domains VALIDATION_DOMAINS Comma-delimited list of lowest-level domains for email validation.
     --profile PROFILE  The name of the AWS profile to use (default: default).
     --region REGION    The AWS region name (default: us-east-1).
 
@@ -26,7 +26,7 @@ Requirements:
 """
 
 __author__ = "Bradley Kovaluk"
-__version__ = "1.2"
+__version__ = "1.3"
 __date__ = "2025-01-17"
 
 import boto3
@@ -51,12 +51,21 @@ def get_acm_client(profile: str, region: str):
     session = boto3.Session(profile_name=profile, region_name=region)
     return session.client('acm')
 
+def get_lowest_domain(fqdn: str) -> str:
+    """
+    Extract the lowest-level domain from a fully qualified domain name (FQDN).
+    """
+    parts = fqdn.split('.')
+    if len(parts) > 2:
+        return '.'.join(parts[-2:])
+    return fqdn
+
 def create_certificate(
     acm_client,
     primary_fqdn: str,
     additional_names: list,
     validation_method: str,
-    validation_emails: Optional[list] = None
+    validation_domains: Optional[list] = None
 ):
     """
     Create an ACM certificate with the specified FQDNs and validation method.
@@ -66,17 +75,18 @@ def create_certificate(
         'SubjectAlternativeNames': additional_names,
         'ValidationMethod': validation_method,
     }
-    
-    if validation_emails and validation_method == 'EMAIL':
-        # Apply email validation for primary FQDN and all SANs
+
+    if validation_method == 'EMAIL':
         domains_to_validate = [primary_fqdn] + additional_names
+        validation_domains = (
+            validation_domains or [get_lowest_domain(domain) for domain in domains_to_validate]
+        )
         request_params['DomainValidationOptions'] = [
             {
                 'DomainName': domain,
-                'ValidationDomain': email,
+                'ValidationDomain': get_lowest_domain(domain),
             }
             for domain in domains_to_validate
-            for email in validation_emails
         ]
 
     response = acm_client.request_certificate(**request_params)
@@ -99,10 +109,10 @@ def main(
         case_sensitive=False,
         show_choices=True,
     ),
-    validation_emails: Optional[str] = typer.Option(
+    validation_domains: Optional[str] = typer.Option(
         None,
-        "--validation-emails",
-        help="Comma-delimited list of email addresses for email validation.",
+        "--validation-domains",
+        help="Comma-delimited list of lowest-level domains for email validation.",
     ),
     profile: str = typer.Option(
         'default',
@@ -125,17 +135,17 @@ def main(
             if additional_names
             else []
         )
-        validation_emails_list = (
-            [email.strip() for email in validation_emails.split(',')]
-            if validation_emails
-            else []
+        validation_domains_list = (
+            [domain.strip() for domain in validation_domains.split(',')]
+            if validation_domains
+            else None
         )
         validation_method = validation_method.lower()
         if validation_method not in ['email', 'dns']:
             typer.echo("Validation method must be 'email' or 'dns'.")
             raise typer.Exit(code=1)
         response = create_certificate(
-            acm_client, primary_fqdn, additional_names_list, validation_method.upper(), validation_emails_list
+            acm_client, primary_fqdn, additional_names_list, validation_method.upper(), validation_domains_list
         )
         logger.info(
             f"Certificate request initiated. Certificate ARN: {response['CertificateArn']}"
